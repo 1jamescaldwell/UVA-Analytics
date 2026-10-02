@@ -27,7 +27,9 @@ def load_sheets_with_dynamic_header(file_path):
                 preview = excel_file.parse(sheet_name=sheet_name, header=3)
                 result[sheet_name] = preview #.iloc[header_row + 1:].reset_index(drop=True)
                 meta_data[sheet_name] = excel_file.parse(sheet_name=sheet_name, nrows=3)
-
+                if sheet_name == 'BFA003E02':
+                    print('loaded BFA003E02!')
+                    print(meta_data[sheet_name].columns[0])
         except Exception as e:
             print(f"Skipped sheet '{sheet_name}' due to error: {e}")
             continue
@@ -98,6 +100,7 @@ def change_log(file1_path, file2_path, result_path):
 
     meta_df_created = []
     missing_VCSIN = []
+    missing_academic_plan_mapping = []
     warning_list = []
     warning_status_list = []
 
@@ -106,37 +109,54 @@ def change_log(file1_path, file2_path, result_path):
         df1 = xl1.get(sheet)
         df2 = xl2.get(sheet)
 
+        # I updated the error downloads script to take care of this. On next version v5, comment out the df2 line, then delete this entirely for versions after that.
         if sheet == "BFA010W10":  #fix SCHEV table error 
             df1 = df1.rename(columns={'Note2': 'SOCSEC1'})
             df2 = df2.rename(columns={'Note2': 'SOCSEC1'})
 
-        # Collect students who have a missing VCSIN mapping
-        if 'Student System ID' in df2.columns:
-            missing_VCSIN.extend(
-                df2.loc[df2['Student System ID'].isna(), 'SOCSEC1'].tolist()
-            )
+
     
         # Drop FAKeyint column. This SCHEV internal code changes between submissions
         # col_to_ignore = ['FAKeyint','Missing VCSIN']
-        col_to_ignore = ['FAKeyint','Rowid','DateStamp','Errdate','New Error?']
+        col_to_ignore = ['FAKeyint','Rowid','rowid','DateStamp','Errdate','New Error?','FA.Primary Academic Program','FA.Academic Plan'] 
+        # this could probably be a function if I want to clean this up in the future
         if df1 is not None:
             df1 = df1.drop(columns=[c for c in col_to_ignore if c in df1.columns])
+            df1["Error/Warning Status"] = 'Resolved'
+            # Find all columns containing "comments"
+            comment_cols_1 = [c for c in df1.columns.tolist() if ('comments' in c.lower() or 'error/warning status' in c.lower() )]
         if df2 is not None:
             df2 = df2.drop(columns=[c for c in col_to_ignore if c in df2.columns])
+            df2["Error/Warning Status"] = 'Active'
+            # Find all columns containing "comments"
+            comment_cols_2 = [c for c in df2.columns.tolist() if ('comments' in c.lower() or 'error/warning status' in c.lower() )]
+
+            # Collect students who have a missing VCSIN mapping
+            if 'Student System ID' in df2.columns:
+                missing_VCSIN.extend(
+                    df2.loc[df2['Student System ID'].isna(), 'SOCSEC1'].tolist()
+                )
+        else: # Error is resolved, just pull in previous data for history
+            print('Missing df2 is sheet ' + str(sheet))
+            df2 = df1
+            xl2_meta[sheet]=xl1_meta[sheet]
+
+        comment_cols = comment_cols_1 + comment_cols_2
 
         # This can be deleted after testing/building done. was only a v1 thing i think.
-        if 'SSID' in df1.columns:
-            df1 = df1.rename(columns={'SSID': 'Student System ID'})
-        if 'SSID' in df2.columns:
-            df1 = df2.rename(columns={'SSID': 'Student System ID'})
-
-        df1["Error/Warning Status"] = 'Resolved'
-        df2["Error/Warning Status"] = 'Active'
-        # I want to add a 3rd one that says "Active again after being resolved previously. But not for now.."
-
-        # Find all columns containing "comments"
-        comment_cols = [c for c in df1.columns.tolist() + df2.columns.tolist()
-                        if ('comments' in c.lower() or 'error/warning status' in c.lower() )]
+        # if 'SSID' in df1.columns and df1 is not None:
+        #     df1 = df1.rename(columns={'SSID': 'Student System ID'})
+        # if 'SSID' in df2.columns:
+        # #     df1 = df2.rename(columns={'SSID': 'Student System ID'})
+        # try:
+        #     df1["Error/Warning Status"] = 'Resolved'
+        # except:
+        #     print('df1 is empty for ' + str(sheet))
+        # try:
+            
+        # except:
+        #     print('df2 is empty for ' + str(sheet))
+        # # I want to add a 3rd one that says "Active again after being resolved previously. But not for now..
 
         # Stack them
         df = pd.concat([df1, df2], ignore_index=True, sort=False)
@@ -176,18 +196,31 @@ def change_log(file1_path, file2_path, result_path):
 
         # Lookup and join Academic plan and program on SSID
         if 'Student System ID' in df.columns.to_list():
-            print('yay!') 
             df = pd.merge(
                         df,
                         program_mapping_df[['Student System ID','FA.Primary Academic Program','FA.Academic Plan']],
                         on='Student System ID',
                         how='left',
-                        suffixes=('', '_assigned')
+                        suffixes=('', '_assigned'),
+                        indicator=True
                     )
             # df = df.drop(columns='Student System ID_assigned')
             print(sheet)
-            print('added mapping:')
-            print(df.head(10))
+
+            # For next iteration, save this info into a new sheet.
+            unmatched = df[df['_merge'] == 'left_only']
+            unmatched = unmatched[unmatched['Student System ID'].notna()]
+            if not unmatched.empty:
+                print(f'Unmatched Student System IDs in {sheet}:')
+                print(unmatched['Student System ID'].to_list())
+                missing_academic_plan_mapping.extend(unmatched['Student System ID'].to_list())
+            df = df.drop(columns='_merge')
+
+        if sheet == 'BFA003E02':
+            print('made it this far')
+            print(xl2_meta.keys())
+            # print(xl1_meta)
+            # print(xl2_meta)
 
         df.to_excel(writer, sheet_name=sheet, index=False,startrow=3) 
         # summary.append(f"Error '{sheet}' present in latest file. No SSN column to compare or duplicate SSN rows, so no summary/comparison stats.")
@@ -250,6 +283,7 @@ def change_log(file1_path, file2_path, result_path):
         pd.DataFrame({"Missing VCSIN": missing_VCSIN}).to_excel(writer, sheet_name="Missing VCSIN", startrow=1, index=False)
 
     writer.close()
+    print(missing_academic_plan_mapping)
 
     return warning_df
     

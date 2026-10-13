@@ -1,4 +1,4 @@
-# James Caldwell, Fall 2025
+# James Caldwell, Fall 2026
 
 import pandas as pd
 import numpy as np  
@@ -21,15 +21,13 @@ def load_sheets_with_dynamic_header(file_path):
     for sheet_name in excel_file.sheet_names:
         try:
             
-            if sheet_name.strip().lower() not in {'summary', 'changelog', 'warnings', 'errors', 'vcsin xref','comparison summary','Missing VCSIN'}:
+            if sheet_name.strip().lower() not in {'summary', 'changelog', 'warnings', 'errors', 'vcsin xref','comparison summary','Missing VCSIN','All Students'}:
 
                 # result[sheet_name] = pd.read_excel(excel_file, sheet_name=sheet_name, header=2) # Default to header on row 3 (index 2)
                 preview = excel_file.parse(sheet_name=sheet_name, header=3)
                 result[sheet_name] = preview #.iloc[header_row + 1:].reset_index(drop=True)
                 meta_data[sheet_name] = excel_file.parse(sheet_name=sheet_name, nrows=3)
-                if sheet_name == 'BFA003E02':
-                    print('loaded BFA003E02!')
-                    print(meta_data[sheet_name].columns[0])
+                
         except Exception as e:
             print(f"Skipped sheet '{sheet_name}' due to error: {e}")
             continue
@@ -45,6 +43,38 @@ def select_file(title):
         filetypes=[("Excel files", "*.xlsx *.xls"), ("All files", "*.*")]
     )
     return file_path
+
+def create_all_student_errors_sheet(all_students_df,writer):
+    # Create hyperlink for error
+    all_students_df['Error Link'] = '=HYPERLINK("#' + all_students_df['Error'] + '!A1", "' + all_students_df['Error'] + '")'
+
+    # Pivot so one row per student, and the list of errors next to each
+    student_errors = (
+    all_students_df.groupby('Student System ID')['Error Link']
+        .agg(list)
+        .to_dict()
+    )
+
+    # Sort students by number of errors, most first
+    student_errors = dict(
+        sorted(student_errors.items(), key=lambda x: len(x[1]), reverse=True)
+    )
+
+    # Create a dataframe with 1 column for each error, one row per student
+    student_errors_df = pd.DataFrame([
+        {
+            'Student System ID': student,
+            # 'Errors': ', '.join(errors)
+            **{f'Error {i+1}': error for i, error in enumerate(errors)}
+        }
+        for student, errors in student_errors.items()
+    ])
+    
+    student_errors_df.to_excel(
+        writer,
+        sheet_name="All Students",
+        index=False
+    )
 
 def collect_notes_columns(df,sheet_name):
     """
@@ -103,6 +133,7 @@ def change_log(file1_path, file2_path, result_path):
     missing_academic_plan_mapping = []
     warning_list = []
     warning_status_list = []
+    all_students_df = pd.DataFrame()
 
     for sheet in all_sheet_names:
         # If either sheet is missing from V1 or V2, df1 or df2 will be None
@@ -110,11 +141,9 @@ def change_log(file1_path, file2_path, result_path):
         df2 = xl2.get(sheet)
 
         # I updated the error downloads script to take care of this. On next version v5, comment out the df2 line, then delete this entirely for versions after that.
-        if sheet == "BFA010W10":  #fix SCHEV table error 
-            df1 = df1.rename(columns={'Note2': 'SOCSEC1'})
-            df2 = df2.rename(columns={'Note2': 'SOCSEC1'})
-
-
+        # if sheet == "BFA010W10":  #fix SCHEV table error 
+        #     df1 = df1.rename(columns={'Note2': 'SOCSEC1'})
+        #     df2 = df2.rename(columns={'Note2': 'SOCSEC1'})
     
         # Drop FAKeyint column. This SCHEV internal code changes between submissions
         # col_to_ignore = ['FAKeyint','Missing VCSIN']
@@ -136,6 +165,14 @@ def change_log(file1_path, file2_path, result_path):
                 missing_VCSIN.extend(
                     df2.loc[df2['Student System ID'].isna(), 'SOCSEC1'].tolist()
                 )
+                # Also collect all SSIDs to log for a summary sheet
+                # all_students_df = all_students_df.concat(df2['Student System ID'],sheet)
+                temp_df = pd.DataFrame({
+                    'Student System ID': df2['Student System ID'],
+                    'Error': sheet
+                })
+                all_students_df = pd.concat([all_students_df, temp_df], ignore_index=True)
+
         else: # Error is resolved, just pull in previous data for history
             print('Missing df2 is sheet ' + str(sheet))
             df2 = df1
@@ -216,9 +253,9 @@ def change_log(file1_path, file2_path, result_path):
                 missing_academic_plan_mapping.extend(unmatched['Student System ID'].to_list())
             df = df.drop(columns='_merge')
 
-        if sheet == 'BFA003E02':
-            print('made it this far')
-            print(xl2_meta.keys())
+        # if sheet == 'BFA003E02':
+        #     print('made it this far')
+        #     print(xl2_meta.keys())
             # print(xl1_meta)
             # print(xl2_meta)
 
@@ -277,15 +314,19 @@ def change_log(file1_path, file2_path, result_path):
         index=False
     )
 
+    # it's here 1
+    create_all_student_errors_sheet(all_students_df, writer)
+    
+
     # Write missing VCSIN
     missing_VCSIN = list(dict.fromkeys(missing_VCSIN)) # unduplicated list of missing VICSINs
     if missing_VCSIN is not None:
         pd.DataFrame({"Missing VCSIN": missing_VCSIN}).to_excel(writer, sheet_name="Missing VCSIN", startrow=1, index=False)
 
     writer.close()
-    print(missing_academic_plan_mapping)
+    # print(missing_academic_plan_mapping)
 
-    return warning_df
+    return warning_df, all_students_df
     
 # def classify_status(text):
 #     if 'longer' in str(text).lower():
@@ -346,14 +387,19 @@ def add_summary_sheet_hyperlinks(result_path):
 
     # Loop through all sheets except the one we are linking to
     for ws in wb.worksheets:
-        if ws.title != sheet_name:
-            # Add hyperlink in cell B3
-            ws.cell(row=3, column=2).value = f'=HYPERLINK("#\'{sheet_name}\'!A1", "{sheet_name}")'
-            #style as hyperlink (blue & underlined)
-            ws.cell(row=3, column=2).font = Font(color="0000FF", underline="single")
         if ws.title == sheet_name: # Highlight summary sheet column of links
             for cell in ws["B"][1:]:
                 cell.font = Font(color="0000FF", underline="single")
+        elif ws.title == 'All Students': # Highligh all hyperlinks on All Students
+            for col in ws.iter_cols(min_col=2, max_col=26, min_row=2):
+                for cell in col:
+                    cell.font = Font(color="0000FF", underline="single")
+        else:
+        # if ws.title != sheet_name:
+            # Add hyperlink in cell B3 for error sheets
+            ws.cell(row=3, column=2).value = f'=HYPERLINK("#\'{sheet_name}\'!A1", "{sheet_name}")'
+            #style as hyperlink (blue & underlined)
+            ws.cell(row=3, column=2).font = Font(color="0000FF", underline="single")
 
     # Save workbook
     wb.save(result_path)
@@ -370,8 +416,24 @@ if __name__ == "__main__":
     if os.path.exists(save_name):
         os.remove(save_name) # Remove existing file if it exists to avoid overwrite issues
 
-    warning_df = change_log(file_path1, file_path2 ,save_name)
+    warning_df, all_students_df = change_log(file_path1, file_path2 ,save_name)
+
     # summary_page(file_path1,save_name, warning_df)
     add_summary_sheet_hyperlinks(save_name)
+
+    # Need to get this to move All Students 2nd, but this is creating a blank excel file again and not working. 
+    # writer = pd.ExcelWriter(save_name, engine='openpyxl')
+    #     # Reorder so All Students is second
+    # writer.book._sheets = [
+    #     writer.book["Comparison Summary"],
+    #     writer.book["All Students"],
+    #         ] + [
+    #             ws for ws in writer.book.worksheets
+    #             if ws.title not in ["First Sheet", "All Students"]
+    # ]
+    # writer.close()
+
+    # Also to do next time: Missing academic plan mappings
+
     print(f"Comparison complete.")
 

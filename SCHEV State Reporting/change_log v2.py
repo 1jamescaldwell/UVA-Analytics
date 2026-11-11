@@ -9,6 +9,8 @@ from openpyxl import load_workbook
 from openpyxl.styles import Font
 from dotenv import load_dotenv
 
+from docx import Document
+
 
 def load_sheets_with_dynamic_header(file_path):
 # This function loads all sheets from an Excel file, checking the first two rows for the header row.
@@ -21,9 +23,7 @@ def load_sheets_with_dynamic_header(file_path):
     for sheet_name in excel_file.sheet_names:
         try:
             
-            if sheet_name.strip().lower() not in {'summary', 'changelog', 'warnings', 'errors', 'vcsin xref','comparison summary','Missing VCSIN','All Students'}:
-
-                # result[sheet_name] = pd.read_excel(excel_file, sheet_name=sheet_name, header=2) # Default to header on row 3 (index 2)
+            if sheet_name.strip().lower() not in {'summary', 'changelog', 'warnings', 'errors', 'vcsin xref','comparison summary','missing vcsin','all students'}:
                 preview = excel_file.parse(sheet_name=sheet_name, header=3)
                 result[sheet_name] = preview #.iloc[header_row + 1:].reset_index(drop=True)
                 meta_data[sheet_name] = excel_file.parse(sheet_name=sheet_name, nrows=3)
@@ -139,25 +139,31 @@ def change_log(file1_path, file2_path, result_path):
         # If either sheet is missing from V1 or V2, df1 or df2 will be None
         df1 = xl1.get(sheet)
         df2 = xl2.get(sheet)
-
-        # I updated the error downloads script to take care of this. On next version v5, comment out the df2 line, then delete this entirely for versions after that.
-        # if sheet == "BFA010W10":  #fix SCHEV table error 
-        #     df1 = df1.rename(columns={'Note2': 'SOCSEC1'})
-        #     df2 = df2.rename(columns={'Note2': 'SOCSEC1'})
     
         # Drop FAKeyint column. This SCHEV internal code changes between submissions
-        # col_to_ignore = ['FAKeyint','Missing VCSIN']
         col_to_ignore = ['FAKeyint','Rowid','rowid','DateStamp','Errdate','New Error?','FA.Primary Academic Program','FA.Academic Plan'] 
         # this could probably be a function if I want to clean this up in the future
         if df1 is not None:
             df1 = df1.drop(columns=[c for c in col_to_ignore if c in df1.columns])
             df1["Error/Warning Status"] = 'Resolved'
             # Find all columns containing "comments"
-            comment_cols_1 = [c for c in df1.columns.tolist() if ('comments' in c.lower() or 'error/warning status' in c.lower() )]
+            try:
+                comment_cols_1 = [c for c in df1.columns.tolist() if ('comments' in c.lower() or 'error/warning status' in c.lower() )]
+            except:
+                print('error sheet: ' + sheet)
         if df2 is not None:
             df2 = df2.drop(columns=[c for c in col_to_ignore if c in df2.columns])
             df2["Error/Warning Status"] = 'Active'
             # Find all columns containing "comments"
+            if sheet == 'BFA003E03':
+                print(str(sheet) + 'here')
+                print(df2.head(10))
+                comment_cols_testing = [c for c in df2.columns.tolist() if ('comments' in c.lower() or 'error/warning status' in c.lower())]
+
+                print(comment_cols_testing)
+                print('made past here')
+            
+            
             comment_cols_2 = [c for c in df2.columns.tolist() if ('comments' in c.lower() or 'error/warning status' in c.lower() )]
 
             # Collect students who have a missing VCSIN mapping
@@ -166,11 +172,7 @@ def change_log(file1_path, file2_path, result_path):
                     df2.loc[df2['Student System ID'].isna(), 'SOCSEC1'].tolist()
                 )
                 # Also collect all SSIDs to log for a summary sheet
-                # all_students_df = all_students_df.concat(df2['Student System ID'],sheet)
-                temp_df = pd.DataFrame({
-                    'Student System ID': df2['Student System ID'],
-                    'Error': sheet
-                })
+                temp_df = pd.DataFrame({'Student System ID': df2['Student System ID'],'Error': sheet})
                 all_students_df = pd.concat([all_students_df, temp_df], ignore_index=True)
 
         else: # Error is resolved, just pull in previous data for history
@@ -179,21 +181,6 @@ def change_log(file1_path, file2_path, result_path):
             xl2_meta[sheet]=xl1_meta[sheet]
 
         comment_cols = comment_cols_1 + comment_cols_2
-
-        # This can be deleted after testing/building done. was only a v1 thing i think.
-        # if 'SSID' in df1.columns and df1 is not None:
-        #     df1 = df1.rename(columns={'SSID': 'Student System ID'})
-        # if 'SSID' in df2.columns:
-        # #     df1 = df2.rename(columns={'SSID': 'Student System ID'})
-        # try:
-        #     df1["Error/Warning Status"] = 'Resolved'
-        # except:
-        #     print('df1 is empty for ' + str(sheet))
-        # try:
-            
-        # except:
-        #     print('df2 is empty for ' + str(sheet))
-        # # I want to add a 3rd one that says "Active again after being resolved previously. But not for now..
 
         # Stack them
         df = pd.concat([df1, df2], ignore_index=True, sort=False)
@@ -217,20 +204,6 @@ def change_log(file1_path, file2_path, result_path):
         col = df.pop("Error/Warning Status")
         df.insert(0, "Error/Warning Status", col)
 
-        
-        # # need to move this outside the loop
-        # load_dotenv()
-        # program_plan_mapping= os.getenv('program_plan_mapping')
-        # program_mapping_df = pd.read_excel(program_plan_mapping)
-        # # print(program_mapping_df.head())
-        # # print(df.head(10))
-
-        # # Add the latest student program and plan to sheets that have SSIDs
-        # program_mapping_df.sort_values(by=['Student System ID','Term'],ascending=[True,False], inplace=True)
-        # print('mapping sorting is:')
-        # print(program_mapping_df.head(15))
-        # program_mapping_df.drop_duplicates(subset=['Student System ID'],keep='first')
-
         # Lookup and join Academic plan and program on SSID
         if 'Student System ID' in df.columns.to_list():
             df = pd.merge(
@@ -241,8 +214,6 @@ def change_log(file1_path, file2_path, result_path):
                         suffixes=('', '_assigned'),
                         indicator=True
                     )
-            # df = df.drop(columns='Student System ID_assigned')
-            print(sheet)
 
             # For next iteration, save this info into a new sheet.
             unmatched = df[df['_merge'] == 'left_only']
@@ -253,14 +224,7 @@ def change_log(file1_path, file2_path, result_path):
                 missing_academic_plan_mapping.extend(unmatched['Student System ID'].to_list())
             df = df.drop(columns='_merge')
 
-        # if sheet == 'BFA003E02':
-        #     print('made it this far')
-        #     print(xl2_meta.keys())
-            # print(xl1_meta)
-            # print(xl2_meta)
-
         df.to_excel(writer, sheet_name=sheet, index=False,startrow=3) 
-        # summary.append(f"Error '{sheet}' present in latest file. No SSN column to compare or duplicate SSN rows, so no summary/comparison stats.")
         # Add back the two rows of metadata (Error description and link) from the first file
         ws = writer.sheets[sheet]
         ws.cell(row=1, column=1, value=xl2_meta[sheet].columns[0]) # Error description
@@ -272,9 +236,6 @@ def change_log(file1_path, file2_path, result_path):
         resolved_counts = df['Error/Warning Status'].value_counts()
         # warning_status_list.append(str(resolved_counts))
         warning_status_list.append(f"Active: {resolved_counts.get('Active', 0)}, Resolved: {resolved_counts.get('Resolved', 0)}")
-
-        # except:
-            # print(str(sheet) + ' had errors')
 
     warning_df = pd.DataFrame(warning_list, columns=['Warning'])
     # warning_df['Error Code'] = warning_df['Warning'].str.split(':').str[0] # Add column with just the error code from the first :'
@@ -308,15 +269,40 @@ def change_log(file1_path, file2_path, result_path):
     col = comparison_summary.pop("Assigned To:")
     comparison_summary.insert(0, "Assigned To:", col)
 
+    # Add a note if explanation is approved
+    try:
+        load_dotenv()
+        filepath= os.getenv('summary_word_doc')
+        doc = Document(filepath)
+        matching_errors = []
+        for table in doc.tables:
+            for row in table.rows:
+                if len(row.cells) >= 2:
+                    error = row.cells[0].text.strip()
+                    explanation = row.cells[1].text.strip()
+                    if "ok to pass" in explanation.lower():
+                        matching_errors.append(error)
+    except:
+        print('Summary Word Doc errors')
+
+    comparison_summary.loc[
+        comparison_summary['Error Link'].str.extract(r'HYPERLINK\("#([^!]+)!')[0].isin(matching_errors),
+        'Explanation'
+    ] = 'Explanation Approved'
+
+    # If Active = 0, mark as resolved
+    comparison_summary.loc[
+        comparison_summary['Status'].str.contains('Active: 0', na=False),
+        'Explanation'
+    ] = 'Resolved'
+
     comparison_summary.to_excel(
         writer,
         sheet_name="Comparison Summary",
         index=False
     )
 
-    # it's here 1
-    create_all_student_errors_sheet(all_students_df, writer)
-    
+    create_all_student_errors_sheet(all_students_df, writer) 
 
     # Write missing VCSIN
     missing_VCSIN = list(dict.fromkeys(missing_VCSIN)) # unduplicated list of missing VICSINs
@@ -324,37 +310,17 @@ def change_log(file1_path, file2_path, result_path):
         pd.DataFrame({"Missing VCSIN": missing_VCSIN}).to_excel(writer, sheet_name="Missing VCSIN", startrow=1, index=False)
 
     writer.close()
-    # print(missing_academic_plan_mapping)
 
     return warning_df, all_students_df
-    
-# def classify_status(text):
-#     if 'longer' in str(text).lower():
-#         return 'Complete'
-#     elif 'added' in str(text).lower():
-#         return 'New Error'
-#     else:
-#         return 'Recurring error'
 
 def summary_page(v1_file_path, result_path, warning_df):
-    # summary_df_new =pd.read_excel(result_path, sheet_name='Comparison Summary')
     summary_df_old =pd.read_excel(v1_file_path, sheet_name='Comparison Summary')
-    assigned_to =  summary_df_old[['Assigned To:','Error']]
 
     summary_df_new['Error'] = summary_df_new.iloc[:, 0].str.extract(r"'([^']*)'")
     summary_df_old['Error'] = summary_df_new.iloc[:, 0].str.extract(r"'([^']*)'")
     summary_df_new = pd.merge(summary_df_new, summary_df_old[['Assigned To:','Error']], how='left',on='Error')
-    # summary_df_new = pd.merge(summary_df_new, summary_df_old['Error','SCHEV Error Summary Explanations (add notes here if there is an explanation for all records in that error)'], how='left',on='Error')
 
-    load_dotenv()
-    meta_data_path= os.getenv('meta_data_path')
-    meta_data_df = pd.read_excel(meta_data_path)
-    # summary_df_new = pd.merge(summary_df_new, meta_data_df[['Description','ErrCode']], how='left',right_on='ErrCode', left_on='Error').drop(columns=['ErrCode'])
     summary_df_new = pd.merge(summary_df_new, warning_df[['Error Code','Warning']], how='left',right_on='Error Code', left_on='Error').drop(columns=['Error Code'])
-    #here
-
-    # warning_df
-    # summary_df_new['Status'] = summary_df_new['Summary'].apply(classify_status)
 
     summary_df_new['Error_Link'] = summary_df_new['Error'].apply(
     lambda x: f'=HYPERLINK("#{x}!A1", "{x}")'
@@ -420,20 +386,6 @@ if __name__ == "__main__":
 
     # summary_page(file_path1,save_name, warning_df)
     add_summary_sheet_hyperlinks(save_name)
-
-    # Need to get this to move All Students 2nd, but this is creating a blank excel file again and not working. 
-    # writer = pd.ExcelWriter(save_name, engine='openpyxl')
-    #     # Reorder so All Students is second
-    # writer.book._sheets = [
-    #     writer.book["Comparison Summary"],
-    #     writer.book["All Students"],
-    #         ] + [
-    #             ws for ws in writer.book.worksheets
-    #             if ws.title not in ["First Sheet", "All Students"]
-    # ]
-    # writer.close()
-
-    # Also to do next time: Missing academic plan mappings
 
     print(f"Comparison complete.")
 
